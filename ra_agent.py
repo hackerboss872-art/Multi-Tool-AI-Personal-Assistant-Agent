@@ -11,7 +11,7 @@ class ResearchAssistant:
 
         self.llm = ChatOllama(
             model="qwen3:0.6b",
-            temperature=0.4,
+            temperature=0.0,
             num_predict=1024
         )
 
@@ -42,59 +42,55 @@ class ResearchAssistant:
     def call_llm(self, state):
         """Invoke the model with the research instructions and history."""
 
-        system_message = SystemMessage(
-            content=f"""
-You are an expert Research Assistant.
-
-Your goal is to research technical topics and generate
-high-quality summaries that help users begin writing
-their literature reviews.
-
-RESEARCH PROCESS:
-
-1. Identify the user's research question and scope.
-
-2. Use available academic research tools to find papers.
-
-3. Use web search tools to find relevant articles,
-   documentation, and additional context.
-
-4. Extract relevant content when extraction tools are available.
-
-5. Compare research objectives, introductions, methodologies,
-   findings, limitations, and conclusions.
-
-6. Synthesize the evidence into a clear technical summary.
-
-7. Include source URLs and bibliographic details returned
-   by the tools whenever available.
-
-8. Clearly state when evidence is insufficient.
-
-
-TOOL RULES:
-
-- Use only the tools bound to this agent.
-- Available tool names: {self.valid_tool_names}
-- Use the exact tool names provided by the MCP server.
-- Supply arguments that match each tool's schema.
-- Never invent tools, papers, findings, or citations.
-- Use tool results as evidence for real-world factual claims.
-- After receiving tool results, analyze them before answering.
-- If you cannot find enough evidence, explain the limitation.
-
-
-STRUCTURE THE FINAL ANSWER WHEN APPROPRIATE:
-
-1. Research overview
-2. Relevant papers and sources
-3. Technical comparison
-4. Key findings and research gaps
-5. Conclusion and references
-"""
+        has_tool_results = any(
+            isinstance(m, ToolMessage)
+            for m in state.get("messages", [])
         )
 
-        response = self.llm_with_tools.invoke(
+        if not has_tool_results:
+            system_prompt = f"""You are an expert, strictly factual Research Assistant.
+
+Your objective is to gather real evidence before answering.
+
+INSTRUCTIONS:
+1. When asked about research topics, papers, weather, date/time, or calculations, you MUST invoke the appropriate tool first.
+2. Available tools: {self.valid_tool_names}.
+   - For academic papers or scientific research, invoke 'arxiv_search'.
+   - For web information, recent news, or general topics, invoke 'web_search'.
+   - For current weather in a city, invoke 'get_weather'.
+   - For mathematical calculations, invoke 'calculator'.
+   - For current date or time, invoke 'get_current_datetime'.
+3. Do NOT generate the final research response or invent citations from memory. Invoke the tool first."""
+        else:
+            system_prompt = f"""You are an expert, strictly factual Research Assistant.
+
+The tool execution is complete. Synthesize the tool findings into a concise, factual summary.
+Do NOT call any more tools.
+
+CRITICAL ANTI-HALLUCINATION RULES:
+1. NEVER invent, fabricate, or guess author names, paper titles, publication dates, URLs, or arXiv IDs.
+2. Every paper, source, or fact in your response MUST come directly from the tool output above.
+3. Preserve the exact title, authors, date, and URL returned by the tool.
+4. Do NOT claim that a source says something unless that information is directly in the tool output.
+5. If any information cannot be verified, explicitly state: "Not verified from the available sources."
+
+REQUIRED OUTPUT FORMAT:
+
+Research Summary
+- [Key factual points directly from the tool output]
+
+Sources
+1. [Exact title / location / service from tool] — [Exact URL returned by tool]
+
+Verification
+- [Clearly state what was verified from the tool output and what could not be verified]"""
+
+        system_message = SystemMessage(
+            content=system_prompt
+        )
+
+        model = self.llm if has_tool_results else self.llm_with_tools
+        response = model.invoke(
             [system_message] + state["messages"]
         )
 
@@ -160,7 +156,16 @@ STRUCTURE THE FINAL ANSWER WHEN APPROPRIATE:
                         tool_args
                     )
 
-                    output = str(observation)
+                    if isinstance(observation, list):
+                        text_parts = [
+                            item.get("text", str(item)) if isinstance(item, dict) else str(item)
+                            for item in observation
+                        ]
+                        output = "\n".join(text_parts)
+                    elif isinstance(observation, dict) and "text" in observation:
+                        output = str(observation["text"])
+                    else:
+                        output = str(observation)
 
                 except Exception as e:
 

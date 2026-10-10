@@ -7,6 +7,7 @@ Provides research and utility tools over STDIO:
 3. fetch_web_page - Extract readable text content from a web URL
 4. calculator - Mathematical expression evaluator
 5. get_current_datetime - Current date and time
+6. get_weather - Live weather lookup for any city
 """
 
 from datetime import datetime
@@ -247,8 +248,108 @@ def get_current_datetime() -> str:
 
 
 # ============================================================================
+# 6. WEATHER TOOL
+# ============================================================================
+
+@mcp.tool()
+def get_weather(city: str) -> str:
+    """
+    Get current weather information for a specific city.
+
+    Args:
+        city: The name of the city, e.g. 'Chandigarh', 'London', 'Tokyo'.
+
+    Returns:
+        Current weather details including temperature, condition, humidity, and wind.
+    """
+    cleaned_city = city.strip()
+    if not cleaned_city:
+        return "Error: City name cannot be empty."
+
+    # Try wttr.in first
+    try:
+        encoded_city = urllib.parse.quote_plus(cleaned_city)
+        headers = {"User-Agent": "ResearchAssistant/1.0"}
+        resp = requests.get(
+            f"https://wttr.in/{encoded_city}?format=j1",
+            headers=headers,
+            timeout=10
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            current = data["current_condition"][0]
+            temp_c = current.get("temp_C", "N/A")
+            temp_f = current.get("temp_F", "N/A")
+            feels_c = current.get("FeelsLikeC", "N/A")
+            condition = current.get("weatherDesc", [{}])[0].get("value", "N/A")
+            humidity = current.get("humidity", "N/A")
+            wind_kmph = current.get("windspeedKmph", "N/A")
+            wind_dir = current.get("winddir16Point", "")
+
+            # Get matched location name if available
+            area_info = data.get("nearest_area", [{}])[0]
+            area_name = area_info.get("areaName", [{}])[0].get("value", cleaned_city)
+            country = area_info.get("country", [{}])[0].get("value", "")
+            location_str = f"{area_name}, {country}".strip(", ")
+
+            return (
+                f"Current Weather in {location_str}:\n"
+                f"- Temperature: {temp_c}°C ({temp_f}°F)\n"
+                f"- Feels Like: {feels_c}°C\n"
+                f"- Condition: {condition}\n"
+                f"- Humidity: {humidity}%\n"
+                f"- Wind: {wind_kmph} km/h {wind_dir}\n"
+                f"- URL: https://wttr.in/{encoded_city}\n"
+            )
+        elif resp.status_code in (404, 500) and "not found" in resp.text.lower():
+            return f"Weather error: Could not find weather data for city '{cleaned_city}'. Please verify the city name."
+    except Exception:
+        pass
+
+    # Fallback to Open-Meteo
+    try:
+        geo_url = (
+            f"https://geocoding-api.open-meteo.com/v1/search?"
+            f"name={urllib.parse.quote_plus(cleaned_city)}&count=1"
+        )
+        geo_resp = requests.get(geo_url, timeout=10)
+        geo_data = geo_resp.json()
+        results = geo_data.get("results")
+        if not results:
+            return f"Weather error: City '{cleaned_city}' not found."
+
+        loc = results[0]
+        name = loc.get("name", cleaned_city)
+        country = loc.get("country", "")
+        lat = loc["latitude"]
+        lon = loc["longitude"]
+
+        w_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,relative_humidity_2m,wind_speed_10m"
+        )
+        w_resp = requests.get(w_url, timeout=10)
+        w_data = w_resp.json().get("current", {})
+
+        temp = w_data.get("temperature_2m", "N/A")
+        humidity = w_data.get("relative_humidity_2m", "N/A")
+        wind = w_data.get("wind_speed_10m", "N/A")
+
+        return (
+            f"Current Weather in {name}, {country}:\n"
+            f"- Temperature: {temp}°C\n"
+            f"- Humidity: {humidity}%\n"
+            f"- Wind Speed: {wind} km/h\n"
+            f"- URL: https://open-meteo.com\n"
+        )
+    except Exception as err:
+        return f"Weather service error: {str(err)}"
+
+
+# ============================================================================
 # MAIN ENTRYPOINT
 # ============================================================================
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
+
